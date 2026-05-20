@@ -1,0 +1,9 @@
+{
+  "123": {
+    "password_hash": "33e64ddedae7643fdade42adff87df52193b64ca536caf2f900a9c877f22998d",
+    "salt": "979d8ee3ed61f5574e3e80cf6910ef5134b8630e6538db0a1a36ba8c9c5052a1",
+    "tenant_id": "default",
+    "role": "admin",
+    "display_name": "Administrator"
+  }
+}

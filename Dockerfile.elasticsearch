@@ -1,0 +1,8 @@
+FROM elasticsearch:8.17.0
+
+# 预装 ES 官方中文分词插件（不依赖 GitHub，始终可用）
+RUN elasticsearch-plugin install --batch analysis-smartcn
+
+# 可选：预装 IK 分词器（需 GitHub 网络可达，否则构建时会失败）
+# RUN elasticsearch-plugin install --batch \
+#     https://github.com/infinilabs/analysis-ik/releases/download/v8.17.0/elasticsearch-analysis-ik-8.17.0.zip
