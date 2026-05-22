@@ -49,9 +49,9 @@ _MAX_CHUNK_CHARS = rag_params.pre_split_chars  # 小块策略：超过该字符�
 
 
 def _force_split_oversized(nodes: list[BaseNode], max_chars: int | None = None) -> list[BaseNode]:
+    """递归强制截断超过 Milvus VARCHAR(65535) 限制的 chunk。"""
     if max_chars is None:
         max_chars = rag_params.max_chunk_chars
-    """递归强制截断超过 Milvus VARCHAR(65535) 限制的 chunk。"""
     result = []
     for node in nodes:
         text = node.get_content()
@@ -73,8 +73,10 @@ def _force_split_oversized(nodes: list[BaseNode], max_chars: int | None = None) 
         right = TextNode(text=text[mid:])
         for child in (left, right):
             child.metadata = dict(node.metadata)
-            child.excluded_embed_metadata_keys = list(node.excluded_embed_metadata_keys) if hasattr(node, "excluded_embed_metadata_keys") else []
-            child.excluded_llm_metadata_keys = list(node.excluded_llm_metadata_keys) if hasattr(node, "excluded_llm_metadata_keys") else []
+            child.excluded_embed_metadata_keys = list(node.excluded_embed_metadata_keys) if hasattr(node,
+                                                                                                    "excluded_embed_metadata_keys") else []
+            child.excluded_llm_metadata_keys = list(node.excluded_llm_metadata_keys) if hasattr(node,
+                                                                                                "excluded_llm_metadata_keys") else []
         # 递归处理，确保最终所有 chunk 都在限制内
         result.extend(_force_split_oversized([left, right], max_chars))
     return result
@@ -189,17 +191,21 @@ class TenantAwareIngestionPipeline:
                 "content_hash": content_hash,
             }
             # 禁止 LlamaIndex 自动序列化内部字段
-            node.excluded_embed_metadata_keys = ["_node_content", "_node_type", "document_id", "ref_doc_id", "relationships"]
-            node.excluded_llm_metadata_keys = ["_node_content", "_node_type", "document_id", "ref_doc_id", "relationships"]
+            node.excluded_embed_metadata_keys = ["_node_content", "_node_type", "document_id", "ref_doc_id",
+                                                 "relationships"]
+            node.excluded_llm_metadata_keys = ["_node_content", "_node_type", "document_id", "ref_doc_id",
+                                               "relationships"]
         return nodes
 
-    def check_duplicate(self, tenant_id: str, content_hash: str) -> dict | None:
-        """检查同一租户下是否已存在相同内容哈希的文档。
+    def check_duplicate(self, tenant_id: str, content_hash: str, text: str = "") -> dict | None:
+        """检查同一租户下是否已存在相同/相似内容的文档。
 
+        先 SHA256 精确匹配（快速路径），再近重复检测（语义相似度）。
         查询 Milvus 集合中匹配 tenant_id + content_hash 的 chunk，
         若存在则返回已入库文档的信息，否则返回 None。
         使用 MilvusClient API 与 LlamaIndex 共用同一连接。
         """
+        # 精确匹配（Milvus metadata 字段）
         try:
             from pymilvus import MilvusClient
 
@@ -209,38 +215,55 @@ class TenantAwareIngestionPipeline:
             )
 
             collection_name = settings.milvus_collection_name
-            if not client.has_collection(collection_name):
-                return None
+            if client.has_collection(collection_name):
+                from src.utils.helpers import _escape_milvus_expr
 
-            from src.utils.helpers import _escape_milvus_expr
-
-            safe_tenant = _escape_milvus_expr(tenant_id)
-            safe_hash = _escape_milvus_expr(content_hash)
-            filter_expr = f'tenant_id == "{safe_tenant}" && content_hash == "{safe_hash}"'
-            results = client.query(
-                collection_name=collection_name,
-                filter=filter_expr,
-                output_fields=["doc_id"],
-                limit=1,
-            )
-
-            if results:
-                existing_doc_id = results[0].get("doc_id", "unknown")
-                safe_doc_id = _escape_milvus_expr(existing_doc_id)
-                count_expr = f'tenant_id == "{safe_tenant}" && doc_id == "{safe_doc_id}"'
-                all_chunks = client.query(
+                safe_tenant = _escape_milvus_expr(tenant_id)
+                safe_hash = _escape_milvus_expr(content_hash)
+                filter_expr = f'tenant_id == "{safe_tenant}" && content_hash == "{safe_hash}"'
+                results = client.query(
                     collection_name=collection_name,
-                    filter=count_expr,
+                    filter=filter_expr,
                     output_fields=["doc_id"],
-                    limit=10000,
+                    limit=1,
                 )
-                return {
-                    "doc_id": existing_doc_id,
-                    "chunk_count": len(all_chunks),
-                    "content_hash": content_hash,
-                }
+
+                if results:
+                    existing_doc_id = results[0].get("doc_id", "unknown")
+                    safe_doc_id = _escape_milvus_expr(existing_doc_id)
+                    count_expr = f'tenant_id == "{safe_tenant}" && doc_id == "{safe_doc_id}"'
+                    all_chunks = client.query(
+                        collection_name=collection_name,
+                        filter=count_expr,
+                        output_fields=["doc_id"],
+                        limit=10000,
+                    )
+                    return {
+                        "doc_id": existing_doc_id,
+                        "chunk_count": len(all_chunks),
+                        "content_hash": content_hash,
+                        "match_type": "exact",
+                    }
         except Exception as e:
-            logger.warning(f"重复检查失败（降级放行）: {e}")
+            logger.warning(f"精确重复检查失败（降级放行）: {e}")
+
+        # 近重复检测（embedding 余弦相似度）
+        if text:
+            try:
+                from src.pipeline.near_dedup import detect_near_duplicate
+
+                emb_model = self._get_embed_model()
+                result = detect_near_duplicate(tenant_id, text, emb_model)
+                if result:
+                    return {
+                        "doc_id": result["existing_doc_id"],
+                        "chunk_count": 0,
+                        "content_hash": content_hash,
+                        "match_type": result["match_type"],
+                        "similarity": result["similarity"],
+                    }
+            except Exception as e:
+                logger.warning(f"近重复检测失败（降级放行）: {e}")
 
         return None
 
@@ -283,7 +306,8 @@ class TenantAwareIngestionPipeline:
         logger.info(f"Milvus 入库完成: {len(nodes)} rows")
         return nodes
 
-    async def ingest(self, documents: list[Document], tenant_id: str, doc_id: str, content_hash: str = "") -> list[BaseNode]:
+    async def ingest(self, documents: list[Document], tenant_id: str, doc_id: str, content_hash: str = "") -> list[
+        BaseNode]:
         """完整入库管道（兼容旧调用）。"""
         documents = _pre_split_large_documents(documents)
         docstore = self._get_docstore()
@@ -323,4 +347,26 @@ class TenantAwareIngestionPipeline:
                 "content_hash": content_hash,
             },
         )
-        return await self.ingest([doc], tenant_id, doc_id, content_hash)
+        nodes = await self.ingest([doc], tenant_id, doc_id, content_hash)
+
+        # 注册文档语义指纹到近重复索引
+        try:
+            from src.pipeline.near_dedup import register_doc_embedding
+
+            embed_model = self._get_embed_model()
+            # 取前几条 chunk 的 embedding 均值作为文档级语义指纹
+            sample_nodes = nodes[:3] if len(nodes) > 3 else nodes
+            if sample_nodes and sample_nodes[0].embedding is not None:
+                dim = len(sample_nodes[0].embedding)
+                avg_embedding = [0.0] * dim
+                for n in sample_nodes:
+                    if n.embedding:
+                        for i, v in enumerate(n.embedding):
+                            avg_embedding[i] += v
+                for i in range(dim):
+                    avg_embedding[i] /= len(sample_nodes)
+                register_doc_embedding(tenant_id, doc_id, content_hash, avg_embedding)
+        except Exception as e:
+            logger.warning(f"语义指纹注册失败（非阻塞）: {e}")
+
+        return nodes

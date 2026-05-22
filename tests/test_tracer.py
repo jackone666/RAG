@@ -92,8 +92,8 @@ class TestInitObservability:
 
         with patch.dict(sys.modules, {"langfuse.llama_index": mock_llama_index}):
             with patch(
-                "llama_index.core.callbacks.CallbackManager",
-                return_value=mock_callback_mgr,
+                    "llama_index.core.callbacks.CallbackManager",
+                    return_value=mock_callback_mgr,
             ):
                 from src.observability.tracer import init_observability
 

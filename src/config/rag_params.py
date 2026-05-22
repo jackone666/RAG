@@ -4,7 +4,7 @@ RAG 效果调参中心 — 所有影响 RAG 管线效果的参数集中管理。
 修改此文件即可调整检索/生成/评估质量，无需改动业务代码。
 参考: 字节跳动 RAG 最佳实践 (rag.pdf)
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -32,6 +32,12 @@ class RAGParams:
     # 文档预览截取长度（Langfuse span / 前端展示用）
     doc_preview_chars: int = 300
 
+    # 生成前上下文压缩 — 参考字节 §2.4.2「检索结果处理」
+    # 对长检索结果抽取与 query 最相关的关键句，减少生成层 token 输入。
+    context_compression_enabled: bool = True
+    context_max_chars_per_doc: int = 1200
+    context_min_sentence_chars: int = 8
+
     # =========================================================================
     # §B. 混合检索 (Retrieval) — 参考字节 §4.3「混合检索策略」
     # =========================================================================
@@ -54,6 +60,10 @@ class RAGParams:
     # 加权融合比例（仅 weighted_rrf 模式生效）：向量权重 vs 关键词权重
     vector_weight: float = 0.6
     keyword_weight: float = 0.4
+    semantic_query_vector_weight: float = 0.8
+    semantic_query_keyword_weight: float = 0.2
+    keyword_query_vector_weight: float = 0.3
+    keyword_query_keyword_weight: float = 0.7
 
     # RRF 平滑常数 k（越大排名影响越弱，推荐 60）
     rrf_k: int = 60
@@ -74,6 +84,9 @@ class RAGParams:
 
     rewrite_temperature: float = 0.0
     rewrite_max_tokens: int = 512
+    hyde_enabled: bool = True
+    query_decomposition_enabled: bool = True
+    query_rewrite_max_variants: int = 6
 
     # =========================================================================
     # §E. 大模型生成 (Generation)
@@ -118,6 +131,7 @@ class RAGParams:
     byte_cache_enabled: bool = True
     byte_cache_ttl: int = 604800  # 7 天
     byte_cache_max_chars: int = 2000  # 单个节点序列化截断长度
+    near_duplicate_threshold: float = 0.95
 
     # 限流
     rate_limit_per_minute: int = 60

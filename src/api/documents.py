@@ -13,16 +13,17 @@ import fitz  # PyMuPDF
 from docx import Document as DocxDocument
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel
-# pymilvus MilvusClient 在函数内按需导入，避免启动时连接
 
 from src.config.settings import settings
 from src.middleware.auth import RBACGuard
-from src.pipeline.preprocessing import preprocess_document
 from src.middleware.rate_limiter import rate_limit_dependency
 from src.pipeline.doc_store import doc_store
 from src.pipeline.ingestion import TenantAwareIngestionPipeline, _compute_content_hash
+from src.pipeline.preprocessing import preprocess_document
 from src.pipeline.sync_manager import SyncManager
 from src.utils.helpers import _escape_milvus_expr  # noqa: F811 — shared, re-exported for backward compat
+
+# pymilvus MilvusClient 在函数内按需导入，避免启动时连接
 
 router = APIRouter(prefix="/v1/documents", tags=["documents"])
 
@@ -150,9 +151,9 @@ def _query_documents_for_tenant(tenant_id: str) -> list[DocumentItem]:
     dependencies=[Depends(rate_limit_dependency), Depends(RBACGuard("editor"))],
 )
 async def upload_document(
-    request: Request,
-    file: UploadFile = File(...),
-    doc_id: str | None = None,
+        request: Request,
+        file: UploadFile = File(...),
+        doc_id: str | None = None,
 ):
     """上传文档并执行入库管道（重复检测 → 分块 → 元数据注入 → 向量化 → 写入 Milvus）。
 
@@ -212,29 +213,31 @@ async def upload_document(
     try:
         doc_store.store_document(tenant_id, doc_id, file.filename, content)
         steps.append(PipelineStep(step="对象存储 (MinIO)", status="done",
-            detail=f"{len(content) / 1024:.0f} KB", elapsed_ms=round((_time.monotonic() - t0) * 1000)))
+                                  detail=f"{len(content) / 1024:.0f} KB",
+                                  elapsed_ms=round((_time.monotonic() - t0) * 1000)))
     except Exception as e:
         steps.append(PipelineStep(step="对象存储 (MinIO)", status="error",
-            detail=str(e)[:100], elapsed_ms=round((_time.monotonic() - t0) * 1000)))
+                                  detail=str(e)[:100], elapsed_ms=round((_time.monotonic() - t0) * 1000)))
         raise HTTPException(500, f"对象存储写入失败: {e}")
 
     # Step 2: 文本分块
     t0 = _time.monotonic()
     nodes = await ingestion_pipeline._embed_and_split(text, tenant_id, doc_id, content_hash)
     steps.append(PipelineStep(step="文本分块 (SentenceSplitter)", status="done",
-        detail=f"{len(nodes)} chunks (语义)", elapsed_ms=round((_time.monotonic() - t0) * 1000)))
+                              detail=f"{len(nodes)} chunks (语义)", elapsed_ms=round((_time.monotonic() - t0) * 1000)))
 
     # Step 3: 远程嵌入
     t0 = _time.monotonic()
     nodes = await ingestion_pipeline._do_embed(nodes)
     steps.append(PipelineStep(step="远程嵌入 (BAAI/bge-m3)", status="done",
-        detail=f"{len(nodes)} vectors × 1024d", elapsed_ms=round((_time.monotonic() - t0) * 1000)))
+                              detail=f"{len(nodes)} vectors × 1024d",
+                              elapsed_ms=round((_time.monotonic() - t0) * 1000)))
 
     # Step 4: 写入 Milvus
     t0 = _time.monotonic()
     nodes = await ingestion_pipeline._do_milvus_insert(nodes)
     steps.append(PipelineStep(step="向量入库 (Milvus)", status="done",
-        detail=f"{len(nodes)} rows", elapsed_ms=round((_time.monotonic() - t0) * 1000)))
+                              detail=f"{len(nodes)} rows", elapsed_ms=round((_time.monotonic() - t0) * 1000)))
 
     # Step 5: 写入 ES（后台）
     t0 = _time.monotonic()
@@ -243,7 +246,7 @@ async def upload_document(
     loop = _asyncio.get_event_loop()
     loop.run_in_executor(None, _index_es_background, tenant_id, doc_id, nodes)
     steps.append(PipelineStep(step="关键词索引 (ES)", status="done",
-        detail="后台写入", elapsed_ms=round((_time.monotonic() - t0) * 1000)))
+                              detail="后台写入", elapsed_ms=round((_time.monotonic() - t0) * 1000)))
 
     return UploadResponse(
         doc_id=doc_id, filename=file.filename, chunk_count=len(nodes),
@@ -267,9 +270,9 @@ async def list_documents(request: Request):
     dependencies=[Depends(rate_limit_dependency), Depends(RBACGuard("editor"))],
 )
 async def upload_documents_batch(
-    request: Request,
-    files: list[UploadFile] = File(...),
-    folder: str = "",
+        request: Request,
+        files: list[UploadFile] = File(...),
+        folder: str = "",
 ):
     """批量上传文档——支持多文件、递归文件夹导入。
 
@@ -290,14 +293,14 @@ async def upload_documents_batch(
             return UploadResponse(
                 doc_id="", filename=f.filename or "unknown", chunk_count=0,
                 status="error", steps=[PipelineStep(step="文件类型检查", status="error",
-                detail=f"不支持: {ext}")],
+                                                    detail=f"不支持: {ext}")],
             )
         content = await f.read()
         if len(content) > MAX_FILE_SIZE:
             return UploadResponse(
                 doc_id="", filename=f.filename or "unknown", chunk_count=0,
                 status="error", steps=[PipelineStep(step="文件大小检查", status="error",
-                detail=f"过大: {len(content) / 1024 / 1024:.1f}MB")],
+                                                    detail=f"过大: {len(content) / 1024 / 1024:.1f}MB")],
             )
         try:
             text = _extract_text(f.filename, content)
@@ -305,13 +308,13 @@ async def upload_documents_batch(
             return UploadResponse(
                 doc_id="", filename=f.filename or "unknown", chunk_count=0,
                 status="error", steps=[PipelineStep(step="文件解析", status="error",
-                detail=str(e)[:100])],
+                                                    detail=str(e)[:100])],
             )
         if not text.strip():
             return UploadResponse(
                 doc_id="", filename=f.filename or "unknown", chunk_count=0,
                 status="error", steps=[PipelineStep(step="文本提取", status="error",
-                detail="提取到的文本为空")],
+                                                    detail="提取到的文本为空")],
             )
 
         # 预处理
@@ -320,7 +323,7 @@ async def upload_documents_batch(
             return UploadResponse(
                 doc_id="", filename=f.filename or "unknown", chunk_count=0,
                 status="error", steps=[PipelineStep(step="预处理", status="error",
-                detail="预处理后文本为空")],
+                                                    detail="预处理后文本为空")],
             )
 
         # 重复检测
@@ -340,7 +343,7 @@ async def upload_documents_batch(
             return UploadResponse(
                 doc_id=doc_id, filename=f.filename or "unknown", chunk_count=0,
                 status="error", steps=[PipelineStep(step="对象存储", status="error",
-                detail=str(e)[:100])],
+                                                    detail=str(e)[:100])],
             )
 
         nodes = await ingestion_pipeline._embed_and_split(text, tenant_id, doc_id, content_hash)
@@ -367,7 +370,7 @@ async def upload_documents_batch(
             items.append(UploadResponse(
                 doc_id="", filename="", chunk_count=0,
                 status="error", steps=[PipelineStep(step="处理异常", status="error",
-                detail=str(r)[:100])],
+                                                    detail=str(r)[:100])],
             ))
             failed += 1
         else:
@@ -401,6 +404,5 @@ async def delete_document(request: Request, doc_id: str):
 
     deleted = sync_manager.delete_document(doc_id, tenant_id)
     return DeleteResponse(doc_id=doc_id, deleted_chunks=deleted)
-
 
 # Tenant info is registered at /v1/tenants/me via main.py

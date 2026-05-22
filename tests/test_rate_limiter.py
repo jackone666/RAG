@@ -100,8 +100,8 @@ class TestRateLimitDependency:
         request.client.host = "1.2.3.4"
 
         with patch(
-            "src.middleware.rate_limiter.rate_limiter.is_allowed",
-            AsyncMock(return_value=(True, 10)),
+                "src.middleware.rate_limiter.rate_limiter.is_allowed",
+                AsyncMock(return_value=(True, 10)),
         ) as mock_check:
             await rate_limit_dependency(request)
             called_key = mock_check.call_args[0][0]
@@ -114,8 +114,8 @@ class TestRateLimitDependency:
         request.client.host = "10.0.0.1"
 
         with patch(
-            "src.middleware.rate_limiter.rate_limiter.is_allowed",
-            AsyncMock(return_value=(True, 10)),
+                "src.middleware.rate_limiter.rate_limiter.is_allowed",
+                AsyncMock(return_value=(True, 10)),
         ) as mock_check:
             await rate_limit_dependency(request)
             called_key = mock_check.call_args[0][0]
@@ -128,8 +128,8 @@ class TestRateLimitDependency:
         request.client.host = "1.2.3.4"
 
         with patch(
-            "src.middleware.rate_limiter.rate_limiter.is_allowed",
-            AsyncMock(return_value=(False, 60)),
+                "src.middleware.rate_limiter.rate_limiter.is_allowed",
+                AsyncMock(return_value=(False, 60)),
         ):
             with pytest.raises(HTTPException) as exc:
                 await rate_limit_dependency(request)

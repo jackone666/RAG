@@ -11,12 +11,13 @@ RAG 核心引擎 - 查询生成与熔断降级模块
 - 主备均失败时返回标准化友好降级提示
 - 涵盖场景：API 超时、429 限流、凭证失效、网络异常
 """
+import re
 import time
 from dataclasses import dataclass
 
 from llama_index.core.schema import NodeWithScore
-from openai import AsyncOpenAI, OpenAI as SyncOpenAI
 from loguru import logger
+from openai import AsyncOpenAI, OpenAI as SyncOpenAI
 
 from src.config.rag_params import rag_params
 from src.config.settings import settings
@@ -33,6 +34,7 @@ class GenerationTrace:
     completion_tokens: int = 0
     total_tokens: int = 0
     prompt_preview: str = ""
+
 
 # 降级友好提示——当主备模型全部不可用时返回
 FALLBACK_RESPONSE = (
@@ -80,7 +82,9 @@ class RAGQueryEngine:
             )
         return self._fallback_llm
 
-    async def _generate(self, llm: AsyncOpenAI, context: str, query: str) -> tuple[str, dict]:
+    async def _generate(
+            self, llm: AsyncOpenAI, context: str, query: str, model_name: str
+    ) -> tuple[str, dict]:
         """使用原生 openai SDK 生成答案，兼容 DeepSeek 等非 OpenAI 模型。
 
         Returns:
@@ -88,7 +92,7 @@ class RAGQueryEngine:
         """
         prompt = self._build_prompt(context, query)
         response = await llm.chat.completions.create(
-            model=settings.primary_model,
+            model=model_name,
             messages=[{"role": "user", "content": prompt}],
             temperature=rag_params.generation_temperature,
             max_tokens=rag_params.generation_max_tokens,
@@ -106,16 +110,123 @@ class RAGQueryEngine:
         """构建生成提示词。"""
         return (
             f"{rag_params.system_prompt}\n\n"
-            f"上下文 / Context:\n{context}\n\n"
+            f"参考资料 / Context:\n{context}\n\n"
             f"问题 / Question: {query}\n\n"
             "回答 / Answer:"
         )
 
-    async def _generate_stream(self, llm: AsyncOpenAI, context: str, query: str):
+    def _extract_query_terms(self, query: str) -> set[str]:
+        """抽取查询关键词，用于生成前的轻量关键句选择。"""
+        terms = set(re.findall(r"[a-zA-Z0-9_]{2,}", query.lower()))
+        for chunk in re.findall(r"[\u4e00-\u9fff]{2,}", query):
+            if len(chunk) <= 6:
+                terms.add(chunk)
+            for i in range(max(0, len(chunk) - 1)):
+                terms.add(chunk[i:i + 2])
+        return terms
+
+    def _split_sentences(self, text: str) -> list[str]:
+        """按中英文标点和换行切句，保留足够长的语义片段。"""
+        parts = re.findall(r"[^。！？；.!?;\n]+[。！？；.!?;]?", text)
+        return [
+            p.strip()
+            for p in parts
+            if len(p.strip()) >= rag_params.context_min_sentence_chars
+        ]
+
+    def _compress_text_for_query(self, text: str, query: str) -> str:
+        """抽取与查询最相关的关键句，减少生成层上下文长度。
+
+        对应字节 RAG 实践中的检索结果摘要思路：检索返回的长片段进入
+        生成层前先做关键内容筛选，降低 token 成本和噪声。
+        """
+        max_chars = rag_params.context_max_chars_per_doc
+        if (
+                not rag_params.context_compression_enabled
+                or len(text) <= max_chars
+        ):
+            return text[:max_chars]
+
+        terms = self._extract_query_terms(query)
+        sentences = self._split_sentences(text)
+        if not terms or not sentences:
+            return text[:max_chars]
+
+        scored: list[tuple[float, int, str]] = []
+        for idx, sentence in enumerate(sentences):
+            lowered = sentence.lower()
+            score = sum(lowered.count(term.lower()) for term in terms)
+            if score > 0:
+                # 轻微保留靠前内容的优先级，标题/摘要通常在文档前部。
+                scored.append((score + 1 / (idx + 10), idx, sentence))
+
+        if not scored:
+            return text[:max_chars]
+
+        selected = []
+        total = 0
+        for _, idx, sentence in sorted(scored, key=lambda x: (-x[0], x[1])):
+            if total + len(sentence) > max_chars and selected:
+                continue
+            selected.append((idx, sentence))
+            total += len(sentence)
+            if total >= max_chars:
+                break
+
+        compressed = "\n".join(sentence for _, sentence in sorted(selected))
+        return compressed[:max_chars] if compressed else text[:max_chars]
+
+    def _build_context(self, nodes: list[NodeWithScore], query: str) -> str:
+        """构建带文档编号的生成上下文，方便回答末尾引用来源。
+
+        加入 L3 句子级精筛（多粒度索引）：对每个 chunk 拆句并选最相关句，
+        减少进入生成层的上下文噪声。
+        """
+        from src.engine.multi_granularity import shared_multi_granularity
+
+        refined = shared_multi_granularity.sentence_level_rerank(nodes, query)
+        parts = []
+        for idx, node in enumerate(refined, start=1):
+            metadata = node.node.metadata or {}
+            doc_id = metadata.get("doc_id", "")
+            file_name = metadata.get("file_name", "")
+            title = file_name or doc_id or f"chunk-{idx}"
+            text = self._compress_text_for_query(node.node.get_content(), query)
+            parts.append(f"[文档{idx}] source={title}\n{text}")
+        return "\n\n".join(parts)
+
+    def _build_references(self, nodes: list[NodeWithScore]) -> str:
+        """构建文档引用列表，每行一个文档，带链接格式。
+
+        Returns:
+            格式化的引用列表字符串
+        """
+        # 去重文档（同一个 doc_id 只出现一次）
+        doc_map = {}
+        for node in nodes:
+            metadata = node.node.metadata or {}
+            doc_id = metadata.get("doc_id", "")
+            file_name = metadata.get("file_name", "")
+            if doc_id and doc_id not in doc_map:
+                doc_map[doc_id] = file_name or doc_id
+
+        if not doc_map:
+            return ""
+
+        # 生成引用列表
+        refs = ["来源文档："]
+        for doc_id, title in doc_map.items():
+            # 使用 doc_id 作为链接标识，前端可以据此跳转
+            refs.append(f"- [{title}](/v1/documents/{doc_id})")
+        return "\n".join(refs)
+
+    async def _generate_stream(
+            self, llm: AsyncOpenAI, context: str, query: str, model_name: str
+    ):
         """流式生成：逐 token 产出回答文本。"""
         prompt = self._build_prompt(context, query)
         stream = await llm.chat.completions.create(
-            model=settings.primary_model,
+            model=model_name,
             messages=[{"role": "user", "content": prompt}],
             temperature=rag_params.generation_temperature,
             max_tokens=rag_params.generation_max_tokens,
@@ -151,7 +262,7 @@ class RAGQueryEngine:
         return answer
 
     async def query_with_trace(
-        self, nodes: list[NodeWithScore], query: str
+            self, nodes: list[NodeWithScore], query: str
     ) -> tuple[str, GenerationTrace]:
         """基于检索节点生成答案，同时返回模型调用追踪数据。
 
@@ -159,18 +270,24 @@ class RAGQueryEngine:
             (生成的回答文本, GenerationTrace 追踪数据)
         """
         trace = GenerationTrace()
-        context = "\n\n".join(node.node.get_content() for node in nodes)
+        context = self._build_context(nodes, query)
 
         # 第一层：尝试主模型
         t0 = time.monotonic()
         try:
-            answer, usage = await self._generate(self._get_primary_llm(), context, query)
+            answer, usage = await self._generate(
+                self._get_primary_llm(), context, query, settings.primary_model
+            )
             trace.model_used = settings.primary_model
             trace.latency_ms = (time.monotonic() - t0) * 1000
             trace.prompt_tokens = usage.get("prompt_tokens", 0)
             trace.completion_tokens = usage.get("completion_tokens", 0)
             trace.total_tokens = usage.get("total_tokens", 0)
             trace.prompt_preview = self._build_prompt(context, query)[:200]
+            # 追加引用列表
+            refs = self._build_references(nodes)
+            if refs:
+                answer = f"{answer}\n\n{refs}"
             return answer, trace
         except Exception as e:
             logger.warning(f"主模型 ({settings.primary_model}) 调用失败: {e}，正在切换备用模型...")
@@ -178,7 +295,9 @@ class RAGQueryEngine:
         # 第二层：降级至备用模型
         t0 = time.monotonic()
         try:
-            answer, usage = await self._generate(self._get_fallback_llm(), context, query)
+            answer, usage = await self._generate(
+                self._get_fallback_llm(), context, query, settings.fallback_model
+            )
             trace.model_used = settings.fallback_model
             trace.fallback_used = True
             trace.latency_ms = (time.monotonic() - t0) * 1000
@@ -186,6 +305,10 @@ class RAGQueryEngine:
             trace.completion_tokens = usage.get("completion_tokens", 0)
             trace.total_tokens = usage.get("total_tokens", 0)
             logger.info(f"备用模型 ({settings.fallback_model}) 生成成功")
+            # 追加引用列表
+            refs = self._build_references(nodes)
+            if refs:
+                answer = f"{answer}\n\n{refs}"
             return answer, trace
         except Exception as e:
             logger.error(f"备用模型 ({settings.fallback_model}) 也调用失败: {e}，返回降级提示")
@@ -199,17 +322,20 @@ class RAGQueryEngine:
         """流式生成答案，逐 token 产出，带自动熔断降级。
 
         Yields:
-            dict: {"token": str} 或 {"done": True, "model_used": str, "fallback": bool}
+            dict: {"token": str} 或 {"done": True, "model_used": str, "fallback": bool, "refs": str}
         """
-        context = "\n\n".join(node.node.get_content() for node in nodes)
+        context = self._build_context(nodes, query)
         model_used = settings.primary_model
         fallback = False
 
         # 第一层：主模型流式生成
         try:
-            async for token in self._generate_stream(self._get_primary_llm(), context, query):
+            async for token in self._generate_stream(
+                    self._get_primary_llm(), context, query, settings.primary_model
+            ):
                 yield {"token": token}
-            yield {"done": True, "model_used": model_used, "fallback": fallback}
+            refs = self._build_references(nodes)
+            yield {"done": True, "model_used": model_used, "fallback": fallback, "refs": refs}
             return
         except Exception as e:
             logger.warning(f"主模型 ({settings.primary_model}) 流式生成失败: {e}")
@@ -218,9 +344,12 @@ class RAGQueryEngine:
         fallback = True
         model_used = settings.fallback_model
         try:
-            async for token in self._generate_stream(self._get_fallback_llm(), context, query):
+            async for token in self._generate_stream(
+                    self._get_fallback_llm(), context, query, settings.fallback_model
+            ):
                 yield {"token": token}
-            yield {"done": True, "model_used": model_used, "fallback": fallback}
+            refs = self._build_references(nodes)
+            yield {"done": True, "model_used": model_used, "fallback": fallback, "refs": refs}
             return
         except Exception as e:
             logger.error(f"备用模型也流式生成失败: {e}")
@@ -228,7 +357,7 @@ class RAGQueryEngine:
         # 第三层：降级文本
         for ch in FALLBACK_RESPONSE:
             yield {"token": ch}
-        yield {"done": True, "model_used": "fallback_text", "fallback": True}
+        yield {"done": True, "model_used": "fallback_text", "fallback": True, "refs": ""}
 
     async def rerank(self, query: str, nodes: list[NodeWithScore], top_n: int | None = None) -> list[NodeWithScore]:
         if top_n is None:

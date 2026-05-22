@@ -11,23 +11,22 @@ tenant_id 元数据过滤，确保存储引擎层面完成租户隔离。
 import time
 from dataclasses import dataclass, field
 
+from elasticsearch import Elasticsearch
+from llama_index.core.base.embeddings.base import BaseEmbedding, Embedding
 from llama_index.core.retrievers import BaseRetriever, QueryFusionRetriever
 from llama_index.core.retrievers.fusion_retriever import FUSION_MODES
-from llama_index.core.base.embeddings.base import BaseEmbedding, Embedding
 from llama_index.core.schema import NodeWithScore, QueryBundle
-
-from src.config.rag_params import rag_params
-from src.utils.byte_cache import byte_cache
 from llama_index.core.vector_stores.types import (
     MetadataFilter,
     MetadataFilters,
     VectorStoreQuery,
 )
 from llama_index.vector_stores.milvus import MilvusVectorStore
-from elasticsearch import Elasticsearch
 from loguru import logger
 
+from src.config.rag_params import rag_params
 from src.config.settings import settings
+from src.utils.byte_cache import byte_cache
 
 
 @dataclass
@@ -43,6 +42,7 @@ class RetrievalTrace:
     top_scores: list[float] = field(default_factory=list)
     # 召回文档预览（用于 Langfuse / 前端展示）
     doc_previews: list[dict] = field(default_factory=list)
+
 
 # 全局共享的嵌入模型实例
 _shared_embed_model = None
@@ -403,12 +403,12 @@ def _deserialize_node(data: dict) -> NodeWithScore:
 
 
 def _weighted_rrf_fusion(
-    vector_nodes: list[NodeWithScore],
-    keyword_nodes: list[NodeWithScore],
-    vw: float = 0.6,
-    kw: float = 0.4,
-    k: int = 60,
-    top_k: int = 10,
+        vector_nodes: list[NodeWithScore],
+        keyword_nodes: list[NodeWithScore],
+        vw: float = 0.6,
+        kw: float = 0.4,
+        k: int = 60,
+        top_k: int = 10,
 ) -> list[NodeWithScore]:
     """加权倒数排名融合 (Weighted Reciprocal Rank Fusion)。
 
@@ -467,6 +467,11 @@ class TenantAwareQueryFusionRetriever:
     - 关键词检索在 ES 查询层强制追加 tenant_id term filter
     - 两条检索通路独立执行，最后加权 RRF 或 LlamaIndex Fusion 融合排序
 
+    动态融合权重（参考字节 §4.3.2）：
+    - semantic 型查询 → 向量权重 0.8 / 关键词权重 0.2
+    - keyword 型查询 → 向量权重 0.3 / 关键词权重 0.7
+    - mixed 型查询 → 向量权重 0.6 / 关键词权重 0.4
+
     并发安全：
     - 直接构造 VectorStoreQuery + aquery()，无全局状态
     - ES 检索无状态，天然并发安全
@@ -476,6 +481,29 @@ class TenantAwareQueryFusionRetriever:
         self._vector_store: MilvusVectorStore | None = None
         self._keyword_retriever = ElasticsearchKeywordRetriever()
         self._embed_model_override = embed_model
+
+    @staticmethod
+    def _resolve_fusion_weights(query: str) -> tuple[float, float]:
+        """根据 query 类型动态选择向量/关键词融合权重。
+
+        分类逻辑由 QueryRewriter.classify() 提供：
+        - semantic: 解释类问题（为什么、如何、原理）→ 向量为主
+        - keyword: 精确匹配类（编号、金额、日期、条款）→ 关键词为主
+        - mixed: 默认平衡权重
+
+        示例：
+        >>> TenantAwareQueryFusionRetriever._resolve_fusion_weights("什么是动态市盈率")
+        (0.8, 0.2)
+        >>> TenantAwareQueryFusionRetriever._resolve_fusion_weights("查询订单编号 ORD-20240001")
+        (0.3, 0.7)
+        """
+        from src.engine.query_rewriter import shared_rewriter
+        qtype = shared_rewriter.classify(query)
+        if qtype == "semantic":
+            return (rag_params.semantic_query_vector_weight, rag_params.semantic_query_keyword_weight)
+        if qtype == "keyword":
+            return (rag_params.keyword_query_vector_weight, rag_params.keyword_query_keyword_weight)
+        return (rag_params.vector_weight, rag_params.keyword_weight)
 
     def _get_embed_model(self):
         """懒加载嵌入模型。"""
@@ -495,7 +523,7 @@ class TenantAwareQueryFusionRetriever:
         return self._vector_store
 
     async def _vector_search(
-        self, query_str: str, tenant_filter: MetadataFilters, top_k: int
+            self, query_str: str, tenant_filter: MetadataFilters, top_k: int
     ) -> list[NodeWithScore]:
         """带租户过滤的向量检索 + ByteCache 热点缓存。
 
@@ -566,21 +594,28 @@ class TenantAwareQueryFusionRetriever:
             logger.info(f"关键词检索无结果，仅返回向量结果: {len(vector_nodes)}")
             return vector_nodes
 
-        # 阶段 3：融合排序（RELATIVE_SCORE）
-        fusion_retriever = QueryFusionRetriever(
-            retrievers=[_FusionAdapter(vector_nodes), _FusionAdapter(keyword_nodes)],
-            similarity_top_k=top_k,
-            num_queries=1,
-            mode=getattr(FUSION_MODES, rag_params.fusion_mode.upper(), FUSION_MODES.RELATIVE_SCORE),
-            use_async=True,
-        )
-
-        nodes = await fusion_retriever.aretrieve(query_bundle)
+        # 阶段 3：融合排序（动态权重）
+        if rag_params.fusion_mode == "weighted_rrf":
+            vw, kw = self._resolve_fusion_weights(query)
+            nodes = _weighted_rrf_fusion(
+                vector_nodes, keyword_nodes,
+                vw=vw, kw=kw,
+                k=rag_params.rrf_k, top_k=top_k,
+            )
+        else:
+            fusion_retriever = QueryFusionRetriever(
+                retrievers=[_FusionAdapter(vector_nodes), _FusionAdapter(keyword_nodes)],
+                similarity_top_k=top_k,
+                num_queries=1,
+                mode=getattr(FUSION_MODES, rag_params.fusion_mode.upper(), FUSION_MODES.RELATIVE_SCORE),
+                use_async=True,
+            )
+            nodes = _ensure_node_with_score(await fusion_retriever.aretrieve(query_bundle))
         logger.info(f"混合检索完成 → {len(nodes)} 节点 (向量+ES融合), tenant={tenant_id}")
         return nodes
 
     async def aretrieve_with_trace(
-        self, query: str, tenant_id: str, top_k: int | None = None
+            self, query: str, tenant_id: str, top_k: int | None = None
     ) -> tuple[list[NodeWithScore], RetrievalTrace]:
         """执行混合检索并返回全链路追踪数据，用于前端可视化。
 
@@ -626,11 +661,12 @@ class TenantAwareQueryFusionRetriever:
             trace.doc_previews = _build_doc_previews(vector_nodes)
             return vector_nodes, trace
 
-        # 阶段 3：融合排序
+        # 阶段 3：融合排序（动态权重：根据 query 类型自动调整向量/关键词比例）
         if rag_params.fusion_mode == "weighted_rrf":
+            vw, kw = self._resolve_fusion_weights(query)
             nodes = _weighted_rrf_fusion(
                 vector_nodes, keyword_nodes,
-                vw=rag_params.vector_weight, kw=rag_params.keyword_weight,
+                vw=vw, kw=kw,
                 k=rag_params.rrf_k, top_k=top_k,
             )
         else:

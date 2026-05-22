@@ -225,6 +225,7 @@ class TestQueryEndpoint:
                     async def fake_stream(*args, **kwargs):
                         yield {"token": "Hi"}
                         yield {"done": True, "model_used": "gpt-4o", "fallback": False}
+
                     mock_stream.return_value = fake_stream()
                     with patch("main._evaluate_and_cache", AsyncMock()):
                         response = client.post(

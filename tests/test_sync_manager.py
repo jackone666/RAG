@@ -19,7 +19,7 @@ class TestSyncManagerDeleteDocument:
                 with patch("src.pipeline.sync_manager.Collection", return_value=mock_collection):
                     # Patch the lazy import inside delete_document
                     with patch(
-                        "src.engine.retrievers.ElasticsearchKeywordRetriever"
+                            "src.engine.retrievers.ElasticsearchKeywordRetriever"
                     ) as mock_es_cls:
                         mock_es = MagicMock()
                         mock_es.delete_document.return_value = 0
@@ -39,7 +39,7 @@ class TestSyncManagerDeleteDocument:
                 mock_utility.has_collection.return_value = True
                 with patch("src.pipeline.sync_manager.Collection", return_value=mock_collection):
                     with patch(
-                        "src.engine.retrievers.ElasticsearchKeywordRetriever"
+                            "src.engine.retrievers.ElasticsearchKeywordRetriever"
                     ) as mock_es_cls:
                         mock_es = MagicMock()
                         mock_es.delete_document.return_value = 0
@@ -57,7 +57,7 @@ class TestSyncManagerDeleteDocument:
             with patch("src.pipeline.sync_manager.utility") as mock_utility:
                 mock_utility.has_collection.return_value = False
                 with patch(
-                    "src.engine.retrievers.ElasticsearchKeywordRetriever"
+                        "src.engine.retrievers.ElasticsearchKeywordRetriever"
                 ) as mock_es_cls:
                     mock_es = MagicMock()
                     mock_es.delete_document.return_value = 0
@@ -85,7 +85,7 @@ class TestSyncManagerDeleteDocument:
                 mock_utility.has_collection.return_value = True
                 with patch("src.pipeline.sync_manager.Collection", return_value=mock_collection):
                     with patch(
-                        "src.engine.retrievers.ElasticsearchKeywordRetriever"
+                            "src.engine.retrievers.ElasticsearchKeywordRetriever"
                     ) as mock_es_cls:
                         mock_es = MagicMock()
                         mock_es.delete_document.return_value = 0
@@ -124,7 +124,7 @@ class TestSyncManagerDeleteTenant:
                 mock_utility.has_collection.return_value = True
                 with patch("src.pipeline.sync_manager.Collection", return_value=mock_collection):
                     with patch(
-                        "src.engine.retrievers.ElasticsearchKeywordRetriever"
+                            "src.engine.retrievers.ElasticsearchKeywordRetriever"
                     ) as mock_es_cls:
                         mock_es = MagicMock()
                         mock_es.delete_tenant.return_value = 5
@@ -143,7 +143,7 @@ class TestSyncManagerDeleteTenant:
                 mock_utility.has_collection.return_value = True
                 with patch("src.pipeline.sync_manager.Collection", return_value=mock_collection):
                     with patch(
-                        "src.engine.retrievers.ElasticsearchKeywordRetriever"
+                            "src.engine.retrievers.ElasticsearchKeywordRetriever"
                     ) as mock_es_cls:
                         mock_es = MagicMock()
                         mock_es.delete_tenant.return_value = 0

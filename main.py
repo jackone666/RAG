@@ -13,25 +13,21 @@ IntelliLens-MCP 企业级智能数据治理与 Agentic RAG 系统 — 主入口
 """
 import json
 import time
-from collections import OrderedDict
 from contextlib import asynccontextmanager
-from pathlib import Path
-from typing import Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
+from loguru import logger
 from pydantic import BaseModel
 
 from src.config.rag_params import rag_params
 from src.config.settings import settings
-from src.engine.query_engine import FALLBACK_RESPONSE, GenerationTrace, shared_query_engine
+from src.engine.query_engine import FALLBACK_RESPONSE, shared_query_engine
 from src.engine.retrievers import RetrievalTrace, shared_retriever
 from src.evaluation.evaluator import evaluator as async_evaluator
 from src.middleware.auth import extract_tenant_context
 from src.middleware.rate_limiter import rate_limit_dependency
-from loguru import logger
-
-from src.observability.tracer import init_observability, trace_rag_query, trace_span, get_langfuse_client
+from src.observability.tracer import init_observability, trace_span, get_langfuse_client
 
 # 模块级单例引擎实例，所有请求复用
 retriever = shared_retriever
@@ -156,8 +152,29 @@ def _cache_key(tenant_id: str, query: str) -> str:
     return f"{tenant_id}::{query.strip().lower()}"
 
 
+def _node_score(node) -> float:
+    """兼容 NodeWithScore 与测试替身，安全读取节点分数。"""
+    return getattr(node, "score", 0.0) or 0.0
+
+
+def _node_content(node) -> str:
+    """兼容 NodeWithScore 与测试替身，安全读取节点文本。"""
+    inner = getattr(node, "node", node)
+    getter = getattr(inner, "get_content", None)
+    if callable(getter):
+        return getter() or ""
+    return getattr(inner, "text", "") or ""
+
+
+def _node_metadata(node) -> dict:
+    """兼容 NodeWithScore 与测试替身，安全读取节点 metadata。"""
+    inner = getattr(node, "node", node)
+    metadata = getattr(inner, "metadata", None)
+    return metadata if isinstance(metadata, dict) else {}
+
+
 async def _retrieve_with_rewrite_and_cache(
-    query: str, tenant_id: str
+        query: str, tenant_id: str
 ) -> tuple[list, RetrievalTrace, int]:
     """执行检索：查询改写 → 多路检索去重 → 热点缓存。
 
@@ -179,7 +196,7 @@ async def _retrieve_with_rewrite_and_cache(
         trace = RetrievalTrace(
             vector_count=len(nodes),
             fusion_count=len(nodes),
-            top_scores=[n.score or 0.0 for n in nodes[:5]],
+            top_scores=[_node_score(n) for n in nodes[:5]],
         )
         return nodes, trace, 0
 
@@ -199,17 +216,19 @@ async def _retrieve_with_rewrite_and_cache(
             merged_trace.vector_latency_ms += trace.vector_latency_ms
             merged_trace.keyword_latency_ms += trace.keyword_latency_ms
             for n in nodes:
-                nid = n.node.node_id or n.node.get_content()[:64]
-                if nid not in all_nodes or (n.score or 0) > (all_nodes[nid][1] or 0):
-                    all_nodes[nid] = (n, n.score)
+                inner = getattr(n, "node", n)
+                nid = getattr(inner, "node_id", "") or _node_content(n)[:64]
+                score = _node_score(n)
+                if nid not in all_nodes or score > (all_nodes[nid][1] or 0):
+                    all_nodes[nid] = (n, score)
 
         nodes = sorted(
             [v[0] for v in all_nodes.values()],
-            key=lambda x: x.score or 0,
+            key=_node_score,
             reverse=True,
         )[:10]
         merged_trace.fusion_count = len(nodes)
-        merged_trace.top_scores = [n.score or 0.0 for n in nodes[:5]]
+        merged_trace.top_scores = [_node_score(n) for n in nodes[:5]]
         merged_trace.fusion_mode = "rewrite_fusion"
     else:
         nodes, merged_trace = await retriever.aretrieve_with_trace(query, tenant_id)
@@ -225,9 +244,9 @@ async def _retrieve_with_rewrite_and_cache(
     dependencies=[Depends(rate_limit_dependency)],
 )
 async def query_endpoint(
-    request: Request,
-    body: QueryRequest,
-    background_tasks: BackgroundTasks,
+        request: Request,
+        body: QueryRequest,
+        background_tasks: BackgroundTasks,
 ):
     """企业 RAG 查询端点——完整的六阶段请求处理管道。
 
@@ -303,9 +322,9 @@ async def query_endpoint(
 
     # Langfuse: rerank span
     rerank_previews = [
-        {"rank": i + 1, "score": round(n.score or 0.0, 4),
-         "text": (n.node.get_content() or "")[:rag_params.doc_preview_chars].replace("\n", " "),
-         "doc_id": n.node.metadata.get("doc_id", "")}
+        {"rank": i + 1, "score": round(_node_score(n), 4),
+         "text": _node_content(n)[:rag_params.doc_preview_chars].replace("\n", " "),
+         "doc_id": _node_metadata(n).get("doc_id", "")}
         for i, n in enumerate(reranked[:10])
     ]
     with trace_span(langfuse_trace, "rerank", input_data={"query": body.query, "candidates": len(nodes)},
@@ -330,7 +349,7 @@ async def query_endpoint(
 
     # 阶段 6：裁判评估（带超时，优先返回结果）
     import asyncio as _asyncio
-    context_texts = [node.node.get_content() for node in reranked]
+    context_texts = [_node_content(node) for node in reranked]
     eval_precision = eval_recall = eval_faithfulness = eval_relevance = None
     eval_passing = eval_overall = None
     try:
@@ -414,7 +433,7 @@ async def query_endpoint(
 
 
 async def _evaluate_and_cache(
-    query_id: str, query: str, context_nodes: list[str], answer: str, tenant_id: str
+        query_id: str, query: str, context_nodes: list[str], answer: str, tenant_id: str
 ) -> None:
     """执行评估并将结果写入内存缓存，供前端轮询。"""
     try:
@@ -428,6 +447,10 @@ async def _evaluate_and_cache(
             "error": str(e)[:200], "evaluated_at": time.time(),
         })
         return
+    if result is not None and not isinstance(result, dict):
+        from loguru import logger
+        logger.warning(f"评估结果类型异常 (query_id={query_id}): {type(result).__name__}")
+        result = None
     if result:
         eval_cache.set(query_id, {
             "query": query,
@@ -460,12 +483,11 @@ async def _evaluate_and_cache(
 
 @app.post(
     "/v1/query/stream",
-    dependencies=[Depends(rate_limit_dependency)],
 )
 async def query_stream_endpoint(
-    request: Request,
-    body: QueryRequest,
-    background_tasks: BackgroundTasks,
+        request: Request,
+        body: QueryRequest,
+        background_tasks: BackgroundTasks,
 ):
     """流式 RAG 查询端点 —— Server-Sent Events 逐 token 推送回答。
 
@@ -502,8 +524,10 @@ async def query_stream_endpoint(
     if not nodes:
         if lf_trace:
             lf_trace.update(output={"status": "no_results"})
+
         async def empty_stream():
             yield f"data: {json.dumps({'answer': f'在租户 {tenant_id} 的知识库中未找到相关文档。', 'query_id': query_id, 'node_count': 0, 'done': True})}\n\n"
+
         return StreamingResponse(empty_stream(), media_type="text/event-stream")
 
     # 阶段 4a：LLM 重排序
@@ -513,9 +537,9 @@ async def query_stream_endpoint(
 
     if lf_trace:
         _rerank_previews = [
-            {"rank": i + 1, "score": round(n.score or 0.0, 4),
-             "text": (n.node.get_content() or "")[:rag_params.doc_preview_chars].replace("\n", " "),
-             "doc_id": n.node.metadata.get("doc_id", "")}
+            {"rank": i + 1, "score": round(_node_score(n), 4),
+             "text": _node_content(n)[:rag_params.doc_preview_chars].replace("\n", " "),
+             "doc_id": _node_metadata(n).get("doc_id", "")}
             for i, n in enumerate(reranked[:10])
         ]
         with trace_span(lf_trace, "rerank", input_data={"query": body.query, "candidates": len(nodes)},
@@ -548,6 +572,7 @@ async def query_stream_endpoint(
         yield f"data: {json.dumps(meta, ensure_ascii=False)}\n\n"
 
         # 流式生成
+        refs = ""
         async for event in query_engine.query_stream(reranked, body.query):
             if "token" in event:
                 collected_tokens.append(event["token"])
@@ -555,6 +580,7 @@ async def query_stream_endpoint(
             elif event.get("done"):
                 gen_model = event.get("model_used", "")
                 gen_fallback = event.get("fallback", False)
+                refs = event.get("refs", "")
 
         gen_latency = (time.monotonic() - gen_start) * 1000
 
@@ -598,6 +624,10 @@ async def query_stream_endpoint(
         }
         yield f"data: {json.dumps(trace, ensure_ascii=False)}\n\n"
 
+        # 发送引用列表
+        if refs:
+            yield f"data: {json.dumps({'type': 'refs', 'refs': refs}, ensure_ascii=False)}\n\n"
+
         # Langfuse: generation span + trace complete
         if lf_trace:
             with trace_span(lf_trace, "generation", input_data={"context_chunks": len(reranked)},
@@ -610,7 +640,7 @@ async def query_stream_endpoint(
 
         # 异步评估 + 等待结果（短超时）推送到 SSE
         full_answer = "".join(collected_tokens)
-        context_texts = [node.node.get_content() for node in reranked]
+        context_texts = [_node_content(node) for node in reranked]
         if full_answer.strip() and full_answer.strip() != FALLBACK_RESPONSE.strip():
             import asyncio as _asyncio
             eval_task = _asyncio.create_task(_evaluate_and_cache(
@@ -641,7 +671,6 @@ async def query_stream_endpoint(
 # ==================== MCP 协议子应用挂载 ====================
 
 # 导入 tools 模块触发 @mcp.tool() 装饰器注册
-import src.mcp_server.tools  # noqa: E402
 from src.mcp_server.server import mcp  # noqa: E402
 
 # 注册文档管理 API 路由
@@ -743,7 +772,6 @@ async def app_page():
 # ==================== 开发模式启动 ====================
 
 if __name__ == "__main__":
-
     import uvicorn
 
     uvicorn.run(

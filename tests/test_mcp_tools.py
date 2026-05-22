@@ -1,7 +1,5 @@
 """Tests for src/mcp_server/tools.py — MCP tool search_enterprise_knowledge."""
 
-import asyncio
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,7 +19,7 @@ class TestSearchEnterpriseKnowledge:
         mock_engine.query = AsyncMock()
 
         with patch(
-            "src.mcp_server.tools._retriever", mock_retriever
+                "src.mcp_server.tools._retriever", mock_retriever
         ), patch(
             "src.mcp_server.tools._query_engine", mock_engine
         ):
@@ -47,7 +45,7 @@ class TestSearchEnterpriseKnowledge:
         mock_engine.query = AsyncMock(return_value="Answer from MCP")
 
         with patch(
-            "src.mcp_server.tools._retriever", mock_retriever
+                "src.mcp_server.tools._retriever", mock_retriever
         ), patch(
             "src.mcp_server.tools._query_engine", mock_engine
         ):
@@ -76,7 +74,7 @@ class TestSearchEnterpriseKnowledge:
         mock_engine.query = AsyncMock(return_value="Generated response")
 
         with patch(
-            "src.mcp_server.tools._retriever", mock_retriever
+                "src.mcp_server.tools._retriever", mock_retriever
         ), patch(
             "src.mcp_server.tools._query_engine", mock_engine
         ):

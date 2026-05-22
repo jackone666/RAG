@@ -1,6 +1,5 @@
 """Tests for src/evaluation/evaluator.py — 6 evaluation metrics."""
 
-import json
 from unittest.mock import AsyncMock, patch
 
 import pytest

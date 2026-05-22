@@ -12,9 +12,9 @@
 import io
 from pathlib import Path
 
+from loguru import logger
 from minio import Minio
 from minio.error import S3Error
-from loguru import logger
 
 from src.config.settings import settings
 
@@ -52,7 +52,7 @@ class DocumentObjectStore:
         return f"{tenant_id}/{doc_id}/{Path(filename).name}"
 
     def store_document(
-        self, tenant_id: str, doc_id: str, filename: str, content: bytes
+            self, tenant_id: str, doc_id: str, filename: str, content: bytes
     ) -> str:
         """存储原始文档到 MinIO。
 

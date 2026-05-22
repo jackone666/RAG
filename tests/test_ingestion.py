@@ -1,6 +1,6 @@
 """Tests for src/pipeline/ingestion.py — metadata injection, pipeline flow."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from llama_index.core.schema import Document, TextNode
@@ -63,4 +63,3 @@ class TestMetadataInjection:
         assert h1 == h2
         assert h1 != h3
         assert len(h1) == 64  # SHA256 hex
-

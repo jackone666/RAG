@@ -5,12 +5,10 @@ PostgreSQL 数据持久化模块 — 复用 Langfuse 的 PostgreSQL 实例
 """
 import json
 import threading
-from pathlib import Path
 
 import psycopg2
 import psycopg2.extras
 from loguru import logger
-
 
 # PostgreSQL 连接配置（复用 langfuse-db）
 DB_CONFIG = {
@@ -125,7 +123,8 @@ def get_bad_case_stats() -> dict:
             cur.execute("SELECT AVG(overall) as avg_score FROM bad_cases")
             avg = cur.fetchone()["avg_score"] or 0
 
-            cur.execute("SELECT AVG(precision) as p, AVG(recall) as r, AVG(mrr) as m, AVG(hit_rate) as h, AVG(faithfulness) as f, AVG(relevance) as rel FROM bad_cases")
+            cur.execute(
+                "SELECT AVG(precision) as p, AVG(recall) as r, AVG(mrr) as m, AVG(hit_rate) as h, AVG(faithfulness) as f, AVG(relevance) as rel FROM bad_cases")
             avgs = cur.fetchone()
 
             cur.execute(

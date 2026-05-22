@@ -90,11 +90,11 @@ class ByteCache:
         return None
 
     def set(
-        self,
-        tenant_id: str,
-        embedding: list[float],
-        top_k: int,
-        results: list[dict],
+            self,
+            tenant_id: str,
+            embedding: list[float],
+            top_k: int,
+            results: list[dict],
     ) -> None:
         """写入缓存。
 
@@ -130,6 +130,104 @@ class ByteCache:
             return self.client.zrevrange(hot_key, 0, n - 1, withscores=True) or []
         except Exception:
             return []
+
+    # ── fine-grained invalidation ─────────────────────────────
+
+    # Redis key 前缀：反向索引 doc_id/tenant_id → 受影响的 cache keys
+    DOC_INDEX_PREFIX = "bytecache:doc"
+    TENANT_INDEX_PREFIX = "bytecache:tenant"
+
+    def _track_doc_keys(self, tenant_id: str, doc_id: str, cache_key: str):
+        """记录 doc_id → cache_key 反向索引，用于文档更新后精确清理。"""
+        try:
+            idx_key = f"{self.DOC_INDEX_PREFIX}:{tenant_id}:{doc_id}"
+            self.client.sadd(idx_key, cache_key)
+            self.client.expire(idx_key, self._ttl)
+        except Exception:
+            pass
+
+    def set_with_tracking(
+            self,
+            tenant_id: str,
+            embedding: list[float],
+            top_k: int,
+            results: list[dict],
+            doc_ids: list[str] | None = None,
+    ) -> None:
+        """写入缓存并建立 doc_id 反向索引，支持文档更新后精确失效。
+
+        相比 set()，额外记录哪些 doc_id 触发了此缓存条目，
+        后续 delete_document 时可据此清理受影响的热点缓存。
+        """
+        if not self._enabled:
+            return
+
+        try:
+            key = self.build_key(tenant_id, self.embedding_hash(embedding), top_k)
+            self.client.setex(key, self._ttl, json.dumps(results, ensure_ascii=False))
+            if doc_ids:
+                for doc_id in doc_ids:
+                    self._track_doc_keys(tenant_id, doc_id, key)
+        except Exception as e:
+            logger.warning(f"ByteCache 写入失败: {e}")
+
+    def invalidate_by_doc(self, tenant_id: str, doc_id: str) -> int:
+        """文档删除/更新后，精确清理该文档关联的所有缓存条目。
+
+        通过反向索引找到受影响的 cache keys 并批量删除。
+
+        Returns:
+            清理的缓存条目数
+        """
+        if not self._enabled:
+            return 0
+
+        try:
+            idx_key = f"{self.DOC_INDEX_PREFIX}:{tenant_id}:{doc_id}"
+            cache_keys = self.client.smembers(idx_key)
+            if not cache_keys:
+                return 0
+            deleted = self.client.delete(*cache_keys)
+            self.client.delete(idx_key)
+            logger.info(f"ByteCache 已清理 doc_id={doc_id} 的 {deleted} 条缓存")
+            return deleted
+        except Exception as e:
+            logger.warning(f"ByteCache 按文档清理失败: {e}")
+            return 0
+
+    def invalidate_by_tenant(self, tenant_id: str) -> int:
+        """租户注销时，批量清理该租户所有缓存条目。
+
+        扫描 cache 前缀下的所有 key 并批量删除。
+        """
+        if not self._enabled:
+            return 0
+
+        try:
+            pattern = f"{self.CACHE_PREFIX}:{tenant_id}:*"
+            keys = []
+            cursor = 0
+            while True:
+                cursor, batch = self.client.scan(cursor, match=pattern, count=100)
+                keys.extend(batch)
+                if cursor == 0:
+                    break
+            if keys:
+                self.client.delete(*keys)
+            # 同时清理反向索引
+            idx_pattern = f"{self.DOC_INDEX_PREFIX}:{tenant_id}:*"
+            cursor = 0
+            while True:
+                cursor, batch = self.client.scan(cursor, match=idx_pattern, count=100)
+                if batch:
+                    self.client.delete(*batch)
+                if cursor == 0:
+                    break
+            logger.info(f"ByteCache 已清理租户 {tenant_id} 的 {len(keys)} 条缓存")
+            return len(keys)
+        except Exception as e:
+            logger.warning(f"ByteCache 按租户清理失败: {e}")
+            return 0
 
     # ── stats ────────────────────────────────────────────────
 

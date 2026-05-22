@@ -17,6 +17,7 @@ Any fix applied to one copy would leave the other stale — a maintenance risk.
 from `src.utils.helpers import _escape_milvus_expr`.
 
 **New files**:
+
 - `src/utils/__init__.py` — package init, re-exports the helper
 - `src/utils/helpers.py` — canonical implementation
 
@@ -32,6 +33,7 @@ merely importing the application triggers a network connection. If Milvus is dow
 unreachable, the entire application fails to start.
 
 **Stack trace before fix**:
+
 ```
 pymilvus.exceptions.MilvusException: Fail connecting to server on localhost:19530
 ```
@@ -42,6 +44,7 @@ not at `__init__` time. The embedding model and splitter are still created at in
 (local, no network), while the Milvus connection is deferred.
 
 **Change**:
+
 ```python
 # Before (connects at init)
 def __init__(self):
@@ -71,6 +74,7 @@ The expression `resp.get("hits", {}).get("max_score") or 1` evaluates to `1` whe
 (all hits would have score 0), the logic was semantically incorrect.
 
 **Fix**: Replaced with explicit `None`/`0` check:
+
 ```python
 # Before
 max_score = resp.get("hits", {}).get("max_score") or 1
@@ -89,18 +93,18 @@ Also removed the now-redundant `if max_score else 0` guard on the division line.
 
 ### Test files added (5 new files, 54 new tests)
 
-| File | Tests | Coverage |
-|---|---|---|
-| `tests/test_helpers.py` | 9 | `_escape_milvus_expr` — normal chars, quotes, SQL injection, Unicode, empty strings |
-| `tests/test_config.py` | 24 | `Settings` defaults, env overrides, required-field validation |
-| `tests/test_main_api.py` | 13 | All FastAPI endpoints: `GET /`, `/health`, `/app`, `/v1/tenants/me`, `POST /v1/query`, `/docs`, `/openapi.json` |
-| `tests/test_mcp_tools.py` | 3 | MCP tool `search_enterprise_knowledge` — happy path, no results, pipeline args |
-| `tests/test_tracer.py` | 5 | `init_observability` — public/secret key skip, ImportError handling, successful init |
+| File                      | Tests | Coverage                                                                                                        |
+|---------------------------|-------|-----------------------------------------------------------------------------------------------------------------|
+| `tests/test_helpers.py`   | 9     | `_escape_milvus_expr` — normal chars, quotes, SQL injection, Unicode, empty strings                             |
+| `tests/test_config.py`    | 24    | `Settings` defaults, env overrides, required-field validation                                                   |
+| `tests/test_main_api.py`  | 13    | All FastAPI endpoints: `GET /`, `/health`, `/app`, `/v1/tenants/me`, `POST /v1/query`, `/docs`, `/openapi.json` |
+| `tests/test_mcp_tools.py` | 3     | MCP tool `search_enterprise_knowledge` — happy path, no results, pipeline args                                  |
+| `tests/test_tracer.py`    | 5     | `init_observability` — public/secret key skip, ImportError handling, successful init                            |
 
 ### Test file changes
 
-| File | Change |
-|---|---|
+| File                   | Change                                                                               |
+|------------------------|--------------------------------------------------------------------------------------|
 | `tests/test_config.py` | All `Settings()` calls now pass `_env_file=None` to prevent `.env` file interference |
 
 ---
@@ -113,22 +117,22 @@ Also removed the now-redundant `if max_score else 0` guard on the division line.
 
 ### Coverage by module
 
-| Module | Test File | Tests |
-|---|---|---|
-| `src/middleware/auth.py` | `test_auth.py` | 16 |
-| `src/config/settings.py` | `test_config.py` | 24 |
-| `src/api/documents.py` | `test_documents.py` | 14 |
-| `src/evaluation/evaluator.py` | `test_evaluator.py` | 6 |
-| `src/utils/helpers.py` | `test_helpers.py` | 9 |
-| `src/pipeline/ingestion.py` | `test_ingestion.py` | 3 |
-| `main.py` (all endpoints) | `test_main_api.py` | 13 |
-| `src/mcp_server/tools.py` | `test_mcp_tools.py` | 3 |
-| `src/engine/query_engine.py` | `test_query_engine.py` | 9 |
-| `src/middleware/rate_limiter.py` | `test_rate_limiter.py` | 9 |
-| `src/engine/retrievers.py` | `test_retrievers.py` | 12 |
-| `src/pipeline/sync_manager.py` | `test_sync_manager.py` | 9 |
-| `src/observability/tracer.py` | `test_tracer.py` | 5 |
-| **Total** | | **132** |
+| Module                           | Test File              | Tests   |
+|----------------------------------|------------------------|---------|
+| `src/middleware/auth.py`         | `test_auth.py`         | 16      |
+| `src/config/settings.py`         | `test_config.py`       | 24      |
+| `src/api/documents.py`           | `test_documents.py`    | 14      |
+| `src/evaluation/evaluator.py`    | `test_evaluator.py`    | 6       |
+| `src/utils/helpers.py`           | `test_helpers.py`      | 9       |
+| `src/pipeline/ingestion.py`      | `test_ingestion.py`    | 3       |
+| `main.py` (all endpoints)        | `test_main_api.py`     | 13      |
+| `src/mcp_server/tools.py`        | `test_mcp_tools.py`    | 3       |
+| `src/engine/query_engine.py`     | `test_query_engine.py` | 9       |
+| `src/middleware/rate_limiter.py` | `test_rate_limiter.py` | 9       |
+| `src/engine/retrievers.py`       | `test_retrievers.py`   | 12      |
+| `src/pipeline/sync_manager.py`   | `test_sync_manager.py` | 9       |
+| `src/observability/tracer.py`    | `test_tracer.py`       | 5       |
+| **Total**                        |                        | **132** |
 
 ---
 
@@ -136,15 +140,15 @@ Also removed the now-redundant `if max_score else 0` guard on the division line.
 
 Every endpoint in the application is covered by at least one test:
 
-| Method | Endpoint | Tests |
-|---|---|---|
-| `GET` | `/` | Root info, JSON content-type |
-| `GET` | `/health` | Health check returns `{"status": "ok"}` |
-| `GET` | `/app` | Redirects to `/static/index.html` |
-| `GET` | `/v1/tenants/me` | Header auth, JWT auth, default role |
-| `POST` | `/v1/query` | Happy path, no results, background eval, tenant context passthrough, default tenant |
-| `POST` | `/v1/documents/upload` | File validation, text extraction (covered via unit tests) |
-| `GET` | `/v1/documents` | Document listing (covered via unit tests) |
-| `DELETE` | `/v1/documents/{doc_id}` | Document deletion (covered via unit tests) |
-| `GET` | `/docs` | OpenAPI docs accessible |
-| `GET` | `/openapi.json` | Schema includes all expected paths |
+| Method   | Endpoint                 | Tests                                                                               |
+|----------|--------------------------|-------------------------------------------------------------------------------------|
+| `GET`    | `/`                      | Root info, JSON content-type                                                        |
+| `GET`    | `/health`                | Health check returns `{"status": "ok"}`                                             |
+| `GET`    | `/app`                   | Redirects to `/static/index.html`                                                   |
+| `GET`    | `/v1/tenants/me`         | Header auth, JWT auth, default role                                                 |
+| `POST`   | `/v1/query`              | Happy path, no results, background eval, tenant context passthrough, default tenant |
+| `POST`   | `/v1/documents/upload`   | File validation, text extraction (covered via unit tests)                           |
+| `GET`    | `/v1/documents`          | Document listing (covered via unit tests)                                           |
+| `DELETE` | `/v1/documents/{doc_id}` | Document deletion (covered via unit tests)                                          |
+| `GET`    | `/docs`                  | OpenAPI docs accessible                                                             |
+| `GET`    | `/openapi.json`          | Schema includes all expected paths                                                  |

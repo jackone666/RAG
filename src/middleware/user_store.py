@@ -11,7 +11,8 @@ USER_STORE_PATH = Path("data/users.json")
 
 
 def _hash_password(password: str, salt: bytes | None = None) -> tuple[str, str]:
-    salt = salt or os.urandom(32)
+    if salt is None:
+        salt = os.urandom(32)
     dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 600_000)
     return dk.hex(), salt.hex()
 

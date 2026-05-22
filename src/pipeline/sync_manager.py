@@ -15,8 +15,6 @@ from loguru import logger
 from pymilvus import Collection, connections, utility
 
 from src.config.settings import settings
-
-
 from src.utils.helpers import _escape_milvus_expr
 
 
@@ -74,6 +72,7 @@ class SyncManager:
         collection_name = settings.milvus_collection_name
 
         milvus_deleted = 0
+        result = []  # 初始化 result，防止集合不存在时 UnboundLocalError
         if not utility.has_collection(collection_name):
             logger.warning(f"集合 '{collection_name}' 不存在，跳过 Milvus 删除")
         else:
@@ -84,7 +83,7 @@ class SyncManager:
             if tenant_id:
                 expr += f' && tenant_id == "{_escape_milvus_expr(tenant_id)}"'
 
-            result = collection.query(expr=expr, output_fields=["id"])
+            result = collection.query(expr=expr, output_fields=["id", "content_hash"])
             ids_to_delete = [r["id"] for r in result]
 
             if ids_to_delete:
@@ -104,7 +103,34 @@ class SyncManager:
         except Exception as e:
             logger.warning(f"ES 文档删除失败（非阻塞）: {e}")
 
-        return max(milvus_deleted, es_deleted)
+        # 清理相关缓存（TTLCache + ByteCache + near_dedup），防止查到已删除的旧知识
+        total = max(milvus_deleted, es_deleted)
+        if total > 0 and tenant_id:
+            try:
+                from src.utils.cache import retrieval_cache
+                retrieval_cache.clear()
+            except Exception as e:
+                logger.warning(f"TTLCache 清理失败: {e}")
+            try:
+                from src.utils.byte_cache import byte_cache
+                byte_cache.invalidate_by_doc(tenant_id, doc_id)
+            except Exception as e:
+                logger.warning(f"ByteCache 按文档清理失败: {e}")
+            try:
+                # 从 Milvus 查询该文档的 content_hash 以清理近重复索引
+                from src.pipeline.near_dedup import remove_doc_from_index
+                if milvus_deleted > 0:
+                    cleanup_hashes = set()
+                    for r in result:
+                        ch = r.get("content_hash", "")
+                        if ch:
+                            cleanup_hashes.add(ch)
+                    for ch in cleanup_hashes:
+                        remove_doc_from_index(ch)
+            except Exception as e:
+                logger.warning(f"近重复索引清理失败: {e}")
+
+        return total
 
     def delete_tenant(self, tenant_id: str) -> int:
         """按租户 ID 批量清理所有数据，同时清理 ES（GDPR / 租户注销场景）。
@@ -147,4 +173,18 @@ class SyncManager:
         except Exception as e:
             logger.warning(f"ES 租户清理失败（非阻塞）: {e}")
 
-        return max(milvus_deleted, es_deleted)
+        # 清理该租户的所有缓存
+        total = max(milvus_deleted, es_deleted)
+        if total > 0:
+            try:
+                from src.utils.cache import retrieval_cache
+                retrieval_cache.clear()
+            except Exception as e:
+                logger.warning(f"TTLCache 清理失败: {e}")
+            try:
+                from src.utils.byte_cache import byte_cache
+                byte_cache.invalidate_by_tenant(tenant_id)
+            except Exception as e:
+                logger.warning(f"ByteCache 按租户清理失败: {e}")
+
+        return total

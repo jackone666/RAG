@@ -1,6 +1,5 @@
 """Tests for src/api/documents.py — file validation, text extraction, API responses."""
 
-import io
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,7 +9,6 @@ from src.api.documents import (
     ALLOWED_EXTENSIONS,
     MAX_FILE_SIZE,
     _extract_text,
-    _extract_text_from_pdf,
     _query_documents_for_tenant,
 )
 

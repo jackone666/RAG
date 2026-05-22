@@ -70,7 +70,7 @@ class AsyncEvaluator:
         return self._extract_json(response.choices[0].message.content or "{}")
 
     async def evaluate(
-        self, query: str, context_nodes: list[str], answer: str, tenant_id: str
+            self, query: str, context_nodes: list[str], answer: str, tenant_id: str
     ) -> dict | None:
         """执行完整评估：检索指标 + 生成指标。
 
@@ -113,9 +113,9 @@ class AsyncEvaluator:
                 logger.warning(f"坏例写入失败: {e}")
             logger.warning(
                 f"检测到坏例: tenant={tenant_id}, "
-                f"precision={result.get('precision',0):.2f}, "
-                f"recall={result.get('recall',0):.2f}, "
-                f"hit_rate={result.get('hit_rate',0):.2f}, "
+                f"precision={result.get('precision', 0):.2f}, "
+                f"recall={result.get('recall', 0):.2f}, "
+                f"hit_rate={result.get('hit_rate', 0):.2f}, "
                 f"overall={result['overall']:.2f}"
             )
 

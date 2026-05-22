@@ -11,6 +11,7 @@
 - Langfuse v4 移除了 LlamaIndex 集成，改用原生 trace API
 """
 from contextlib import contextmanager
+
 from llama_index.core import Settings
 from llama_index.core.callbacks import CallbackManager
 
@@ -95,6 +96,7 @@ def trace_span(trace, name: str, input_data: dict = None, output_data: dict = No
 
 class _SpanWrapper:
     """统一 span 包装器，兼容 context manager 协议。"""
+
     def __init__(self, span):
         self._span = span
 

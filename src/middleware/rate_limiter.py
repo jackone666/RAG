@@ -20,7 +20,6 @@
 """
 import time
 import uuid
-from typing import Optional
 
 import redis.asyncio as aioredis
 from fastapi import HTTPException, Request, status
@@ -89,11 +88,11 @@ class RedisSlidingWindowRateLimiter:
     """
 
     def __init__(
-        self,
-        redis_url: str | None = None,
-        max_requests: int | None = None,
-        window_seconds: int = 60,
-        connection_pool_size: int = 20,
+            self,
+            redis_url: str | None = None,
+            max_requests: int | None = None,
+            window_seconds: int = 60,
+            connection_pool_size: int = 20,
     ):
         """初始化 Redis 限流器。
 

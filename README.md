@@ -40,26 +40,26 @@ HTTP Request
 
 ## 五大防线
 
-| 防线 | 模块 | 说明 |
-|------|------|------|
-| **多租户隔离 (RBAC)** | `middleware/auth.py` | JWT 鉴权，Milvus/ES 强制注入 tenant_id 过滤 |
-| **文档生命周期同步** | `pipeline/sync_manager.py` | 删除文档时同步清理 Milvus + ES |
-| **限流 + 熔断降级** | `middleware/rate_limiter.py` `engine/query_engine.py` | 滑动窗口限流，主备模型自动切换 |
-| **LLMOps 可观测性** | `observability/tracer.py` | Langfuse 全链路 trace + span |
-| **异步 LLM 裁判评估** | `evaluation/evaluator.py` | 并行评估检索+生成质量，自动沉淀 bad cases |
+| 防线               | 模块                                                    | 说明                                 |
+|------------------|-------------------------------------------------------|------------------------------------|
+| **多租户隔离 (RBAC)** | `middleware/auth.py`                                  | JWT 鉴权，Milvus/ES 强制注入 tenant_id 过滤 |
+| **文档生命周期同步**     | `pipeline/sync_manager.py`                            | 删除文档时同步清理 Milvus + ES              |
+| **限流 + 熔断降级**    | `middleware/rate_limiter.py` `engine/query_engine.py` | 滑动窗口限流，主备模型自动切换                    |
+| **LLMOps 可观测性**  | `observability/tracer.py`                             | Langfuse 全链路 trace + span          |
+| **异步 LLM 裁判评估**  | `evaluation/evaluator.py`                             | 并行评估检索+生成质量，自动沉淀 bad cases         |
 
 ## 评估指标
 
 每此查询返回 6 项质量指标：
 
-| 指标 | 类型 | 说明 |
-|------|------|------|
-| Precision | 检索 | 检索文档中真正相关的比例 |
-| Recall | 检索 | 相关文档被检索到的比例 |
-| MRR | 检索 | 首个相关文档排名的倒数 |
-| Hit Rate | 检索 | Top-K 中存在相关文档 |
-| Faithfulness | 生成 | 回答是否严格基于上下文 |
-| Relevance | 生成 | 回答与问题的相关程度 |
+| 指标           | 类型 | 说明            |
+|--------------|----|---------------|
+| Precision    | 检索 | 检索文档中真正相关的比例  |
+| Recall       | 检索 | 相关文档被检索到的比例   |
+| MRR          | 检索 | 首个相关文档排名的倒数   |
+| Hit Rate     | 检索 | Top-K 中存在相关文档 |
+| Faithfulness | 生成 | 回答是否严格基于上下文   |
+| Relevance    | 生成 | 回答与问题的相关程度    |
 
 ## 混合检索配置
 
@@ -73,16 +73,16 @@ HTTP Request
 
 ## API
 
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/v1/query` | POST | 非流式 RAG 查询（含评估指标） |
-| `/v1/query/stream` | POST | SSE 流式 RAG 查询 |
-| `/v1/evaluation/{query_id}` | GET | 轮询评估结果 |
-| `/v1/documents/upload` | POST | 单文件上传 |
-| `/v1/documents/upload-batch` | POST | 批量/文件夹上传 |
-| `/v1/documents` | GET | 文档列表 |
-| `/v1/documents/{doc_id}` | DELETE | 删除文档 |
-| `/health` | GET | 健康检查 |
+| 端点                           | 方法     | 说明                |
+|------------------------------|--------|-------------------|
+| `/v1/query`                  | POST   | 非流式 RAG 查询（含评估指标） |
+| `/v1/query/stream`           | POST   | SSE 流式 RAG 查询     |
+| `/v1/evaluation/{query_id}`  | GET    | 轮询评估结果            |
+| `/v1/documents/upload`       | POST   | 单文件上传             |
+| `/v1/documents/upload-batch` | POST   | 批量/文件夹上传          |
+| `/v1/documents`              | GET    | 文档列表              |
+| `/v1/documents/{doc_id}`     | DELETE | 删除文档              |
+| `/health`                    | GET    | 健康检查              |
 
 ## 项目结构
 
